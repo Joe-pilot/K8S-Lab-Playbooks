@@ -1,0 +1,32 @@
+---
+cluster_name: "k8s-lab"
+k8s_minor_repo: "v1.29"
+k8s_version: "1.29.0-1.1"
+k8s_full_version: "v1.29.0"
+
+control_plane_vip: "10.10.10.150"
+control_plane_port: 6443
+
+pod_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+dns_domain: "cluster.local"
+ntp_server: "10.10.10.1"
+
+ansible_user: k8sadmin
+ansible_become: true
+ansible_become_method: sudo
+ansible_python_interpreter: /usr/bin/python3
+
+worker_nodes:
+  - k8s-wkr-01
+  - k8s-wkr-02
+  - k8s-wkr-03
+
+infra_nodes:
+  - k8s-inf-01
+  - k8s-inf-02
+
+storage_nodes:
+  - k8s-sto-01
+  - k8s-sto-02
+  - k8s-sto-03
