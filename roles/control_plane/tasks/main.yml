@@ -1,0 +1,92 @@
+---
+- name: Check if cluster is already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+
+- name: Ensure /etc/kubernetes exists
+  file:
+    path: /etc/kubernetes
+    state: directory
+    mode: '0755'
+
+- name: Write kubeadm init config
+  copy:
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    mode: '0644'
+    content: |
+      apiVersion: kubeadm.k8s.io/v1beta3
+      kind: InitConfiguration
+      nodeRegistration:
+        criSocket: unix:///run/containerd/containerd.sock
+        kubeletExtraArgs:
+          cloud-provider: "external"
+          node-ip: "{{ ansible_host }}"
+      ---
+      apiVersion: kubeadm.k8s.io/v1beta3
+      kind: ClusterConfiguration
+      clusterName: "{{ cluster_name }}"
+      kubernetesVersion: "{{ k8s_full_version }}"
+      controlPlaneEndpoint: "{{ control_plane_vip }}:{{ control_plane_port }}"
+      networking:
+        dnsDomain: "{{ dns_domain }}"
+        serviceSubnet: "{{ service_cidr }}"
+        podSubnet: "{{ pod_cidr }}"
+      apiServer:
+        certSANs:
+          - "{{ control_plane_vip }}"
+          - "{{ ansible_host }}"
+          - "10.10.10.151"
+          - "10.10.10.152"
+          - "10.10.10.153"
+          - "10.10.10.162"
+          - "10.10.10.163"
+          - "k8s-vip.lab"
+          - "k8s-cp-01.lab"
+          - "k8s-cp-02.lab"
+          - "k8s-cp-03.lab"
+          - "kubernetes"
+          - "kubernetes.default"
+          - "kubernetes.default.svc"
+          - "kubernetes.default.svc.cluster.local"
+      ---
+      apiVersion: kubelet.config.k8s.io/v1beta1
+      kind: KubeletConfiguration
+      cgroupDriver: systemd
+
+- name: Initialize Kubernetes control plane
+  command: kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs
+  args:
+    creates: /etc/kubernetes/admin.conf
+  register: kubeadm_init_result
+  when: not kubeadm_admin_conf.stat.exists
+
+- name: Save kubeadm init output
+  copy:
+    content: "{{ kubeadm_init_result.stdout }}"
+    dest: /root/kubeadm-init.log
+    mode: '0600'
+  when:
+    - kubeadm_init_result is defined
+    - kubeadm_init_result.changed
+
+- name: Create kubeconfig directory for k8sadmin
+  file:
+    path: /home/k8sadmin/.kube
+    state: directory
+    owner: k8sadmin
+    group: k8sadmin
+    mode: '0755'
+
+- name: Copy kubeconfig for k8sadmin
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/k8sadmin/.kube/config
+    owner: k8sadmin
+    group: k8sadmin
+    mode: '0600'
+    remote_src: true
+
+- name: Show kubeadm init output
+  debug:
+    msg: "{{ kubeadm_init_result.stdout_lines | default(['Cluster already initialized.']) }}"

@@ -1,0 +1,34 @@
+---
+- name: Check kubectl access
+  command: kubectl --kubeconfig=/home/k8sadmin/.kube/config get nodes
+  changed_when: false
+
+- name: Label worker nodes
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config label node {{ item }}
+    node-role.kubernetes.io/worker="" node-type=worker --overwrite
+  loop: "{{ worker_nodes }}"
+
+- name: Label infra nodes
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config label node {{ item }}
+    node-role.kubernetes.io/infra="" node-type=infra --overwrite
+  loop: "{{ infra_nodes }}"
+
+- name: Taint infra nodes
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config taint node {{ item }}
+    dedicated=infra:NoSchedule --overwrite
+  loop: "{{ infra_nodes }}"
+
+- name: Label storage nodes
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config label node {{ item }}
+    node-role.kubernetes.io/storage="" node-type=storage --overwrite
+  loop: "{{ storage_nodes }}"
+
+- name: Taint storage nodes
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config taint node {{ item }}
+    dedicated=storage:NoSchedule --overwrite
+  loop: "{{ storage_nodes }}"

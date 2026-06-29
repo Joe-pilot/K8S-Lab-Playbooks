@@ -1,0 +1,7 @@
+---
+- name: Initialize first Kubernetes control-plane node
+  hosts: k8s-cp-01
+  become: true
+  gather_facts: true
+  roles:
+    - control_plane

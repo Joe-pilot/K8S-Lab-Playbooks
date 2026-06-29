@@ -1,0 +1,9 @@
+---
+- name: Rolling OS patch for Kubernetes nodes
+  hosts: k8s_all
+  become: true
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - patching

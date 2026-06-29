@@ -1,0 +1,21 @@
+---
+- name: Validate required survey variables
+  assert:
+    that:
+      - join_token is defined
+      - discovery_hash is defined
+      - join_token | length > 0
+      - discovery_hash | length > 0
+    fail_msg: "Required survey variables: join_token, discovery_hash"
+
+- name: Check if node already joined
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Join node to Kubernetes cluster
+  command: >
+    kubeadm join {{ control_plane_vip }}:{{ control_plane_port }}
+    --token {{ join_token }}
+    --discovery-token-ca-cert-hash {{ discovery_hash }}
+  when: not kubelet_conf.stat.exists

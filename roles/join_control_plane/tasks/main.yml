@@ -1,0 +1,43 @@
+---
+- name: Validate required survey variables
+  assert:
+    that:
+      - join_token is defined
+      - discovery_hash is defined
+      - cert_key is defined
+      - join_token | length > 0
+      - discovery_hash | length > 0
+      - cert_key | length > 0
+    fail_msg: "Required survey variables: join_token, discovery_hash, cert_key"
+
+- name: Check if node already joined as control plane
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+
+- name: Join node as control plane
+  command: >
+    kubeadm join {{ control_plane_vip }}:{{ control_plane_port }}
+    --token {{ join_token }}
+    --discovery-token-ca-cert-hash {{ discovery_hash }}
+    --control-plane
+    --certificate-key {{ cert_key }}
+  when: not kubeadm_admin_conf.stat.exists
+
+- name: Create kubeconfig directory for k8sadmin
+  file:
+    path: /home/k8sadmin/.kube
+    state: directory
+    owner: k8sadmin
+    group: k8sadmin
+    mode: '0755'
+
+- name: Copy kubeconfig for k8sadmin
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/k8sadmin/.kube/config
+    owner: k8sadmin
+    group: k8sadmin
+    mode: '0600'
+    remote_src: true
+  when: not kubeadm_admin_conf.stat.exists

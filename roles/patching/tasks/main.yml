@@ -1,0 +1,61 @@
+---
+- name: Cordon Kubernetes node before patching
+  command: kubectl --kubeconfig=/home/k8sadmin/.kube/config cordon {{ inventory_hostname }}
+  delegate_to: k8s-cp-01
+  become_user: k8sadmin
+  changed_when: true
+  ignore_errors: true
+  when: inventory_hostname not in groups.get('loadbalancers', [])
+
+- name: Drain workload node before patching
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config drain {{ inventory_hostname }}
+    --ignore-daemonsets
+    --delete-emptydir-data
+    --timeout=120s
+  delegate_to: k8s-cp-01
+  become_user: k8sadmin
+  changed_when: true
+  ignore_errors: true
+  when:
+    - inventory_hostname in groups.get('workers', []) or
+      inventory_hostname in groups.get('infra', []) or
+      inventory_hostname in groups.get('storage', [])
+
+- name: Update apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Upgrade installed packages
+  apt:
+    upgrade: dist
+    dpkg_options: "force-confdef,force-confold"
+
+- name: Check if reboot is required
+  stat:
+    path: /var/run/reboot-required
+  register: reboot_required
+
+- name: Reboot node if required
+  reboot:
+    reboot_timeout: 600
+  when: reboot_required.stat.exists
+
+- name: Wait for Kubernetes node Ready
+  command: >
+    kubectl --kubeconfig=/home/k8sadmin/.kube/config wait node/{{ inventory_hostname }}
+    --for=condition=Ready --timeout=180s
+  delegate_to: k8s-cp-01
+  become_user: k8sadmin
+  changed_when: false
+  ignore_errors: true
+  when: inventory_hostname not in groups.get('loadbalancers', [])
+
+- name: Uncordon Kubernetes node
+  command: kubectl --kubeconfig=/home/k8sadmin/.kube/config uncordon {{ inventory_hostname }}
+  delegate_to: k8s-cp-01
+  become_user: k8sadmin
+  changed_when: true
+  ignore_errors: true
+  when: inventory_hostname not in groups.get('loadbalancers', [])

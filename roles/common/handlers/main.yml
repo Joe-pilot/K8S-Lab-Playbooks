@@ -1,0 +1,14 @@
+---
+- name: Reload sysctl
+  command: sysctl --system
+
+- name: Restart chrony
+  service:
+    name: chrony
+    state: restarted
+
+- name: Restart vmtoolsd
+  service:
+    name: vmtoolsd
+    state: restarted
+  ignore_errors: true

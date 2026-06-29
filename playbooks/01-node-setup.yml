@@ -1,0 +1,9 @@
+---
+- name: Prepare all Kubernetes lab nodes
+  hosts: k8s_all
+  become: true
+  gather_facts: true
+  roles:
+    - common
+    - containerd
+    - kubernetes

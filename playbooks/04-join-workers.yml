@@ -1,0 +1,8 @@
+---
+- name: Join Kubernetes worker, infra, and storage nodes
+  hosts: workers,infra,storage
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - join_workers

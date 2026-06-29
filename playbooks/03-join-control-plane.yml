@@ -1,0 +1,8 @@
+---
+- name: Join additional Kubernetes control-plane nodes
+  hosts: k8s-cp-02,k8s-cp-03
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - join_control_plane
