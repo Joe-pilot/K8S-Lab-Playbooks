@@ -10,9 +10,8 @@
     replace: '# \1'
 
 - name: Load required kernel modules
-  modprobe:
-    name: "{{ item }}"
-    state: present
+  command: "modprobe {{ item }}"
+  changed_when: false
   loop:
     - overlay
     - br_netfilter
