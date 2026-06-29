@@ -1,0 +1,8 @@
+---
+- name: Apply node labels and taints
+  hosts: k8s-cp-01
+  become: false
+  gather_facts: false
+
+  vars:
+    kubeconfig: "/home/k8sadmin/.kube/config"
