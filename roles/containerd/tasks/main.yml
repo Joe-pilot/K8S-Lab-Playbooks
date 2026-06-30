@@ -51,3 +51,10 @@
     name: containerd
     state: started
     enabled: true
+
+- name: Ensure CRI plugin is enabled in containerd
+  lineinfile:
+    path: /etc/containerd/config.toml
+    regexp: '^disabled_plugins = \["cri"\]'
+    state: absent
+  notify: Restart containerd
