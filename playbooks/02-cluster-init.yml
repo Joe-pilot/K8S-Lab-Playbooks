@@ -1,7 +1,156 @@
 ---
-- name: Initialize first Kubernetes control-plane node
+- name: Initialise control plane and install Calico CNI
   hosts: k8s-cp-01
   become: true
-  gather_facts: true
-  roles:
-    - control_plane
+
+  tasks:
+
+    - name: Write kubeadm config
+      copy:
+        dest: /etc/kubernetes/kubeadm-config.yaml
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: InitConfiguration
+          nodeRegistration:
+            criSocket: unix:///run/containerd/containerd.sock
+            kubeletExtraArgs:
+              cloud-provider: "external"
+              node-ip: "{{ ansible_host }}"
+          ---
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: ClusterConfiguration
+          clusterName: "{{ cluster_name }}"
+          kubernetesVersion: "v1.29.0"
+          controlPlaneEndpoint: "{{ control_plane_vip }}:{{ control_plane_port }}"
+          networking:
+            dnsDomain: "{{ dns_domain }}"
+            serviceSubnet: "{{ service_cidr }}"
+            podSubnet: "{{ pod_cidr }}"
+          apiServer:
+            certSANs:
+            - "{{ control_plane_vip }}"
+            - "10.10.10.151"
+            - "10.10.10.152"
+            - "10.10.10.153"
+            - "10.10.10.162"
+            - "10.10.10.163"
+            - "k8s-vip.lab"
+            - "k8s-cp-01.lab"
+            - "k8s-cp-02.lab"
+            - "k8s-cp-03.lab"
+            - "kubernetes"
+            - "kubernetes.default"
+            - "kubernetes.default.svc"
+            - "kubernetes.default.svc.cluster.local"
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+
+    - name: Run kubeadm init
+      command: >
+        kubeadm init
+        --config /etc/kubernetes/kubeadm-config.yaml
+        --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_output
+
+    - name: Save init output to file
+      copy:
+        content: "{{ kubeadm_output.stdout }}"
+        dest: /root/kubeadm-init.log
+      when: kubeadm_output.changed
+
+    - name: Set up kubectl for k8sadmin
+      block:
+        - file:
+            path: /home/k8sadmin/.kube
+            state: directory
+            owner: k8sadmin
+            group: k8sadmin
+        - copy:
+            src: /etc/kubernetes/admin.conf
+            dest: /home/k8sadmin/.kube/config
+            owner: k8sadmin
+            group: k8sadmin
+            mode: '0600'
+            remote_src: true
+
+    - name: Wait for API server to be ready
+      uri:
+        url: "https://127.0.0.1:6443/healthz"
+        validate_certs: false
+        status_code: 200
+      register: api_health
+      until: api_health.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Install Tigera operator for Calico
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        create -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/tigera-operator.yaml
+      become_user: k8sadmin
+      register: tigera_result
+      failed_when:
+        - tigera_result.rc != 0
+        - '"already exists" not in tigera_result.stderr'
+
+    - name: Wait for Tigera operator to be ready
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        wait deployment/tigera-operator
+        -n tigera-operator
+        --for=condition=Available
+        --timeout=120s
+      become_user: k8sadmin
+
+    - name: Apply Calico Installation CR
+      shell:
+        cmd: kubectl --kubeconfig /home/k8sadmin/.kube/config apply -f -
+        stdin: |
+          apiVersion: operator.tigera.io/v1
+          kind: Installation
+          metadata:
+            name: default
+          spec:
+            calicoNetwork:
+              ipPools:
+              - blockSize: 26
+                cidr: {{ pod_cidr }}
+                encapsulation: VXLANCrossSubnet
+                natOutgoing: Enabled
+                nodeSelector: all()
+          ---
+          apiVersion: operator.tigera.io/v1
+          kind: APIServer
+          metadata:
+            name: default
+          spec: {}
+      become_user: k8sadmin
+
+    - name: Wait for Calico pods to be Running
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        wait pods -n calico-system
+        --all
+        --for=condition=Ready
+        --timeout=180s
+      become_user: k8sadmin
+
+    - name: Verify node is Ready
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        get nodes
+      become_user: k8sadmin
+      register: node_status
+
+    - name: Print node status and join commands
+      debug:
+        msg:
+          - "=== NODE STATUS ==="
+          - "{{ node_status.stdout_lines }}"
+          - "=== SAVE THESE JOIN COMMANDS FOR JOBS 03 AND 04 ==="
+          - "{{ kubeadm_output.stdout_lines }}"
+      when: kubeadm_output.changed
