@@ -62,22 +62,29 @@
         dest: /root/kubeadm-init.log
       when: kubeadm_output.changed
 
-    - name: Set up kubectl for k8sadmin
-      block:
-        - file:
-            path: /home/k8sadmin/.kube
-            state: directory
-            owner: k8sadmin
-            group: k8sadmin
-        - copy:
-            src: /etc/kubernetes/admin.conf
-            dest: /home/k8sadmin/.kube/config
-            owner: k8sadmin
-            group: k8sadmin
-            mode: '0600'
-            remote_src: true
+    - name: Create .kube directory for k8sadmin
+      file:
+        path: /home/k8sadmin/.kube
+        state: directory
+        owner: k8sadmin
+        group: k8sadmin
+        mode: '0755'
 
-    - name: Wait for API server to be ready
+    - name: Copy admin.conf to k8sadmin kube config
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/k8sadmin/.kube/config
+        owner: k8sadmin
+        group: k8sadmin
+        mode: '0600'
+        remote_src: true
+
+    # ── Wait for API server ────────────────────────────────────────────────────
+    # We test 127.0.0.1:6443 directly — this works before kube-proxy starts
+    # because kubelet and control plane pods use the local socket, not
+    # the Service ClusterIP (10.96.0.1)
+
+    - name: Wait for API server to be ready on local address
       uri:
         url: "https://127.0.0.1:6443/healthz"
         validate_certs: false
@@ -87,17 +94,24 @@
       retries: 30
       delay: 10
 
+    # ── Install Tigera operator ────────────────────────────────────────────────
+
     - name: Install Tigera operator for Calico
       command: >
         kubectl --kubeconfig /home/k8sadmin/.kube/config
-        create -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/tigera-operator.yaml
+        create -f
+        https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/tigera-operator.yaml
       become_user: k8sadmin
       register: tigera_result
       failed_when:
         - tigera_result.rc != 0
         - '"already exists" not in tigera_result.stderr'
 
-    - name: Wait for Tigera operator to be ready
+    - name: Wait 30 seconds for Tigera operator to initialise
+      pause:
+        seconds: 30
+
+    - name: Wait for Tigera operator deployment to be available
       command: >
         kubectl --kubeconfig /home/k8sadmin/.kube/config
         wait deployment/tigera-operator
@@ -106,7 +120,17 @@
         --timeout=120s
       become_user: k8sadmin
 
-    - name: Apply Calico Installation CR
+    # ── Apply Calico Installation CR ──────────────────────────────────────────
+    # KEY FIX: We set KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT
+    # environment variables on the calico-node DaemonSet via the Installation CR.
+    # This tells Calico to reach the API server at the direct node IP (10.10.10.151)
+    # instead of the Service ClusterIP (10.96.0.1) which requires kube-proxy.
+    #
+    # Without this fix, Calico tries 10.96.0.1:443 which is unreachable because
+    # kube-proxy iptables rules are not set up yet (chicken-and-egg deadlock).
+    # With this fix, Calico uses the real IP directly and starts cleanly.
+
+    - name: Apply Calico Installation CR with direct API server address
       shell:
         cmd: kubectl --kubeconfig /home/k8sadmin/.kube/config apply -f -
         stdin: |
@@ -122,6 +146,10 @@
                 encapsulation: VXLANCrossSubnet
                 natOutgoing: Enabled
                 nodeSelector: all()
+            nodeUpdateStrategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxUnavailable: 1
           ---
           apiVersion: operator.tigera.io/v1
           kind: APIServer
@@ -130,27 +158,112 @@
           spec: {}
       become_user: k8sadmin
 
-    - name: Wait for Calico pods to be Running
+    # ── Patch calico-node to use direct API server IP ─────────────────────────
+    # After the operator creates the calico-node DaemonSet, patch it to add
+    # environment variables that override the API server address.
+    # This is the critical step that breaks the deadlock.
+
+    - name: Wait for calico-system namespace to be created
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        get namespace calico-system
+      become_user: k8sadmin
+      register: ns_check
+      until: ns_check.rc == 0
+      retries: 30
+      delay: 10
+
+    - name: Wait for calico-node DaemonSet to be created by operator
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        get daemonset calico-node -n calico-system
+      become_user: k8sadmin
+      register: ds_check
+      until: ds_check.rc == 0
+      retries: 30
+      delay: 10
+
+    - name: Patch calico-node DaemonSet to use direct API server IP
+      shell: |
+        kubectl --kubeconfig /home/k8sadmin/.kube/config \
+          patch daemonset calico-node \
+          -n calico-system \
+          --type=json \
+          -p='[
+            {
+              "op": "add",
+              "path": "/spec/template/spec/containers/0/env/-",
+              "value": {
+                "name": "KUBERNETES_SERVICE_HOST",
+                "value": "10.10.10.151"
+              }
+            },
+            {
+              "op": "add",
+              "path": "/spec/template/spec/containers/0/env/-",
+              "value": {
+                "name": "KUBERNETES_SERVICE_PORT",
+                "value": "6443"
+              }
+            }
+          ]'
+      become_user: k8sadmin
+      register: patch_result
+      failed_when:
+        - patch_result.rc != 0
+        - '"not found" not in patch_result.stderr'
+
+    - name: Wait for Calico pods to be created
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        get pods -n calico-system
+      become_user: k8sadmin
+      register: pods_check
+      until: pods_check.stdout != ""
+      retries: 30
+      delay: 10
+
+    - name: Wait for all Calico pods to be Ready
       command: >
         kubectl --kubeconfig /home/k8sadmin/.kube/config
         wait pods -n calico-system
         --all
         --for=condition=Ready
+        --timeout=300s
+      become_user: k8sadmin
+
+    - name: Wait for CoreDNS to be Running (confirms CNI is working)
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        wait pods -n kube-system
+        -l k8s-app=kube-dns
+        --for=condition=Ready
         --timeout=180s
       become_user: k8sadmin
 
-    - name: Verify node is Ready
+    - name: Get final node status
       command: >
         kubectl --kubeconfig /home/k8sadmin/.kube/config
-        get nodes
+        get nodes -o wide
       become_user: k8sadmin
       register: node_status
 
-    - name: Print node status and join commands
+    - name: Get Calico pod status
+      command: >
+        kubectl --kubeconfig /home/k8sadmin/.kube/config
+        get pods -n calico-system
+      become_user: k8sadmin
+      register: calico_status
+
+    - name: Print node status
       debug:
-        msg:
-          - "=== NODE STATUS ==="
-          - "{{ node_status.stdout_lines }}"
-          - "=== SAVE THESE JOIN COMMANDS FOR JOBS 03 AND 04 ==="
-          - "{{ kubeadm_output.stdout_lines }}"
+        msg: "{{ node_status.stdout_lines }}"
+
+    - name: Print Calico pod status
+      debug:
+        msg: "{{ calico_status.stdout_lines }}"
+
+    - name: Print join commands - SAVE THESE for Jobs 03 and 04
+      debug:
+        msg: "{{ kubeadm_output.stdout_lines }}"
       when: kubeadm_output.changed
